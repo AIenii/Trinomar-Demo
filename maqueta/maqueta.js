@@ -170,8 +170,6 @@ function construirMesa(scene, B, planoUrl) {
   const tablero = new THREE.Mesh(new THREE.BoxGeometry(W, 4 * K, D), tabMat); tablero.position.set(cx, yMesa - 2 * K, cz); tablero.receiveShadow = true; g.add(tablero);
   const acero = new THREE.MeshStandardMaterial({ color: 0x2b2c2e, roughness: .4, metalness: .8 });
   for (const sx of [-1, 1]) for (const sz of [-1, 1]) { const p = new THREE.Mesh(new THREE.BoxGeometry(5 * K, 72 * K, 5 * K), acero); p.position.set(cx + sx * (W / 2 - 12 * K), yMesa - 40 * K, cz + sz * (D / 2 - 10 * K)); g.add(p); }
-  const piso = new THREE.Mesh(new THREE.PlaneGeometry(1400 * K, 1400 * K), triplanar({ color: 0x6b5340, roughness: .7 }, roble, .002, { side: THREE.FrontSide }));
-  piso.rotation.x = -Math.PI / 2; piso.position.y = yMesa - 76 * K; piso.receiveShadow = true; g.add(piso);
   // base de la maqueta: MDF con marco de nogal
   const nogal = triplanar({ color: 0x6e4a31, roughness: .45 }, TEX.balsa(), .12, { side: THREE.FrontSide });
   const mdf = new THREE.Mesh(new THREE.BoxGeometry(bw, espBase, bd), triplanar({ color: 0xcfc6b6, roughness: .96 }, TEX.prensado(), .3, { side: THREE.FrontSide }));
@@ -236,8 +234,10 @@ function construirMesa(scene, B, planoUrl) {
   const foco = new THREE.Mesh(new THREE.SphereGeometry(3, 16, 12), new THREE.MeshStandardMaterial({ emissive: 0xfff1d6, emissiveIntensity: 3, color: 0xffffff }));
   foco.position.set(-40.5, 61.5, 0);
   lamp.add(pie, b1, b2, pantalla, foco); lamp.scale.setScalar(K); lamp.position.set(B.x1 + marco + 30 * K, yMesa, B.z0 + 6 * K); lamp.rotation.y = -2.2; lamp.traverse(o => o.castShadow = true); g.add(lamp);
+  // sin oficina alrededor: solo la mesa con la maqueta y lo que hay sobre ella
   return { grupo: g, lampara: lamp, foco, yMesa, mesa: { cx, cz, W, D } };
 }
+
 
 /* ------------------------------------------------------------------ posición del sol (NOAA simplificado) */
 function sol(hora, fecha = new Date()) {
@@ -286,7 +286,7 @@ export async function iniciarMaqueta(cont, opt = {}) {
   const scene = new THREE.Scene();
   const pm = new THREE.PMREMGenerator(renderer); scene.environment = pm.fromScene(new RoomEnvironment(), .04).texture; scene.environmentIntensity = .5;
   const cam = new THREE.PerspectiveCamera(30, 1, 1, 9000);
-  const ctl = new OrbitControls(cam, renderer.domElement); ctl.enableDamping = true; ctl.dampingFactor = .08; ctl.maxPolarAngle = Math.PI * .46; ctl.minDistance = 10; ctl.maxDistance = 900; ctl.screenSpacePanning = true;
+  const ctl = new OrbitControls(cam, renderer.domElement); ctl.enableDamping = true; ctl.dampingFactor = .08; ctl.maxPolarAngle = Math.PI * .46; ctl.minDistance = 10; ctl.maxDistance = 720; ctl.screenSpacePanning = true;
   ctl.zoomToCursor = true;
 
   // cielo del estudio: degradado que cambia con la hora
@@ -385,6 +385,7 @@ export async function iniciarMaqueta(cont, opt = {}) {
     U.cB.value.copy(C(.07 + .5 * dia * dia, .55 - .25 * dia, .55 + .25 * dia));
     U.cC.value.copy(C(.07, .2, .1));
     renderer.toneMappingExposure = .78 + .1 * dia;
+    scene.userData.ofi && scene.userData.ofi(dia);
     req();
   }
   function ajustarSombra() {
@@ -470,6 +471,11 @@ export async function iniciarMaqueta(cont, opt = {}) {
     anim.push({ fn: t => { const s = new THREE.Spherical(s0.radius + (sph.radius - s0.radius) * t, s0.phi + (sph.phi - s0.phi) * t, s0.theta + dth * t);
       ctl.target.lerpVectors(t0c, objetivo, t); cam.position.copy(ctl.target).add(new THREE.Vector3().setFromSpherical(s)); }, t0: performance.now(), ms }); req();
   }
+  /* Distancia de la cámara según la forma real del visor (no según el tipo de equipo): las medidas de escritorio
+     sirven para pantallas apaisadas (también el celular en horizontal) y las del celular para las verticales;
+     en medio se interpola. Así el encuadre no corta el edificio al girar el teléfono. */
+  const aspecto = () => (cont.clientWidth || 1) / (cont.clientHeight || 1);
+  const dist = (esc, cel) => { const t = THREE.MathUtils.clamp((1.15 - aspecto()) / (1.15 - .55), 0, 1); return esc + (cel - esc) * t; };
   const zNivel = id => info.niveles[ORD.indexOf(id)].z;
   function centroNivel(id) { return new THREE.Vector3(cc.x, zNivel(id) + 1.2 + ORD.indexOf(id) * despiece, cc.z); }
 
@@ -481,7 +487,7 @@ export async function iniciarMaqueta(cont, opt = {}) {
     const amb = (info.ambientes || {})[nv + u] || []; const sala = amb.find(a => /Sala/.test(a.t)) || amb[0]; const h = info.huella[u];
     const x = sala ? sala.x : (h[0] + h[2]) / 2, y = sala ? sala.y : (h[1] + h[3]) / 2;
     enRecorrido = true; foco = nv; unidadSel = nv + u; nivelRec = nv; despiece = 0; aplicar();
-    ctl.enabled = false; relleno.intensity = 7; cam.near = .05; cam.fov = movil ? 70 : 62; cam.updateProjectionMatrix();
+    ctl.enabled = false; relleno.intensity = 7; cam.near = .05; cam.fov = dist(62, 70); cam.updateProjectionMatrix();
     const p0 = cam.position.clone(), q0 = cam.quaternion.clone();
     ojo.copy(su(x, y, zNivel(nv) + ALTO_OJO)); yaw = 0; pitch = -.04; // mirando al mar (sur = +z)
     const q1 = new THREE.Quaternion(); { const c2 = cam.clone(); c2.position.copy(ojo); c2.lookAt(ojo.clone().add(new THREE.Vector3(0, -.04, 1))); q1.copy(c2.quaternion); }
@@ -546,26 +552,33 @@ export async function iniciarMaqueta(cont, opt = {}) {
     niveles: info.niveles, huella: info.huella, unidadesPorNivel: info.unidades, ambientes: info.ambientes,
     verNivel(id) { if (enRecorrido) salir(false);
       foco = id === 'todo' ? null : id; unidadSel = null; aplicar();
-      if (foco) volar(centroNivel(foco), movil ? 120 : 88, .5, null); else api.inicio(); },
+      if (foco) volar(centroNivel(foco), dist(88, 120), .5, null); else api.inicio(); },
     verUnidad(nv, u) { if (enRecorrido) salir(false);
       foco = nv; unidadSel = nv + u; aplicar(); const h = info.huella[u];
       const c = su((h[0] + h[2]) / 2, (h[1] + h[3]) / 2, zNivel(nv) + 1); c.y += ORD.indexOf(nv) * despiece;
-      volar(c, movil ? 44 : 34, .58, null); },
+      volar(c, dist(34, 44), .58, null); },
     recorrer, salir: () => salir(true),
     muebles(v) { conMuebles = v; aplicar(); },
-    despiece(v) { despiece = v ? 7 : 0; aplicar(); if (!foco) volar(cc.clone().setY(cs.y * .45 + (v ? 20 : 0)), Math.max(cs.x, cs.z) * (movil ? 6 : 4.4), 1.1, null, 900); },
+    despiece(v) { despiece = v ? 7 : 0; aplicar(); if (!foco) volar(cc.clone().setY(cs.y * .45 + (v ? 20 : 0)), Math.max(cs.x, cs.z) * dist(4.4, 6), 1.1, null, 900); },
     entorno(v) { conEntorno = v; aplicar(); },
     hora: ponerHora, get horaActual() { return horaActual; },
-    inicio() { if (enRecorrido) salir(false); foco = null; unidadSel = null; aplicar(); volar(cc.clone().setY(cs.y * .32), movil ? 330 : 240, 1.08, .62, 1600); },
-    vistaGeneral() { volar(new THREE.Vector3((B.x0 + B.x1) / 2, 0, (B.z0 + B.z1) / 2), movil ? 620 : 470, .78, .55, 1600); },
+    inicio() { if (enRecorrido) salir(false); foco = null; unidadSel = null; aplicar(); volar(cc.clone().setY(cs.y * .32), dist(240, 330), 1.08, .62, 1600); },
+    vistaGeneral() { volar(new THREE.Vector3((B.x0 + B.x1) / 2, 0, (B.z0 + B.z1) / 2), dist(470, 620), .78, .55, 1600); },
     refrescar: refrescarDatos, pausar(v) { pausado = v; if (!v) req(); },
     get estado() { return { foco, unidadSel, enRecorrido, despiece, conMuebles, conEntorno }; },
     _r: { renderer, scene, cam, ctl, THREE, niveles, cc, cs, M, TEX },
   };
 
+  if (/[?&]prueba\b/.test(location.search)) window.__mqR = Object.assign({}, api._r, { req });
   // bucle de dibujo a demanda
   let pausado = false, tPrev = performance.now();
-  function tam() { const w = cont.clientWidth, h = cont.clientHeight; if (!w || !h) return; renderer.setSize(w, h, false); cam.aspect = w / h; cam.updateProjectionMatrix(); req(); }
+  /* Al cambiar de vertical a horizontal (o al revés) se vuelve a encuadrar lo que se estaba mirando, sin saltos: con el mismo vuelo suave. */
+  let formaPrev = null, tForma = null;
+  function tam() { const w = cont.clientWidth, h = cont.clientHeight; if (!w || !h) return; renderer.setSize(w, h, false); cam.aspect = w / h; cam.updateProjectionMatrix(); req();
+    const forma = w >= h ? 'h' : 'v';
+    if (formaPrev && forma !== formaPrev && !enRecorrido) { clearTimeout(tForma); tForma = setTimeout(() => { if (enRecorrido || anim.length) return;
+      if (unidadSel && foco) api.verUnidad(foco, unidadSel.slice(foco.length)); else if (foco) api.verNivel(foco); else api.inicio(); }, 250); }
+    formaPrev = forma; }
   new ResizeObserver(tam).observe(cont); tam();
   cam.position.set(cc.x + 260, 160, cc.z + 330); ctl.target.copy(cc); ctl.update();
   let sombraT = 0;
