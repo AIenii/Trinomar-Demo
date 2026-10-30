@@ -1823,6 +1823,8 @@ html,body{overscroll-behavior:none}
   .ct{top:calc(var(--bar) + 6px + var(--sa-t));bottom:calc(8px + var(--sa-b));transform:translateX(-50%);max-height:none;width:min(560px,calc(100% - 32px));padding:16px 20px;gap:10px;align-content:start}
   .ct-row{min-height:52px;padding:6px 12px}
 }
+/* ahorro de batería: sin el acercamiento lento continuo de las amenidades (la GPU trabaja 12 s por imagen) */
+body.ahorro .am-img.on{transform:none}
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{animation:none!important;transition-duration:.01ms!important}
 }
@@ -2421,11 +2423,15 @@ function runClip(v,onStart,opt){
   return new Promise(res=>{
     let started=false, done=false;
     const tCarga=setTimeout(()=>{ if(!started&&!done) cargaClip(true); },350);
-    const fin=ok=>{ if(done) return; done=true; playing=null; v.onended=v.onerror=null; clearTimeout(tCarga); cargaClip(false);
+    const fin=ok=>{ if(done) return; done=true; playing=null; v.onended=v.onerror=v.onpause=null; clearTimeout(tCarga); cargaClip(false);
       if(!ok){ v.pause(); v.classList.remove('on'); v.remove(); } res(ok); };
     const show=()=>{ if(started) return; started=true; clearTimeout(tCarga); cargaClip(false); v.classList.add('on'); onStart&&onStart(); };
     v.addEventListener('playing',show,{once:true});
     v.onended=()=>fin(true); v.onerror=()=>fin(false);
+    /* el iPhone en bajo consumo puede pausar un video que ya corría: se reintenta una vez y, si sigue quieto,
+       se salta al final (el último cuadro es la pantalla siguiente), en lugar de esperar 20 s con la interfaz oculta */
+    v.onpause=()=>{ if(done||!started||v.ended) return; try{ const q=v.play(); if(q&&q.catch) q.catch(()=>{}); }catch(e){}
+      setTimeout(()=>{ if(!done && v.paused && !v.ended) fin(true); },700); };
     playing={v,finish:fin};
     try{ v.currentTime=opt.desde||0; }catch(e){}
     if(opt.antes){ const vigila=()=>{ if(done) return; if(v.duration && v.currentTime>=v.duration-opt.antes){ v.pause(); fin(true); } else requestAnimationFrame(vigila); }; requestAnimationFrame(vigila); }
@@ -3478,18 +3484,37 @@ function vivoEstacion(){
 /* Las escenas vivas solo corren mientras se ven. Cada vez que vuelven a verse arrancan en el segundo 0,
    que es idéntico al render y sin pájaros: así nunca hay salto ni pájaros que aparecen de la nada. */
 let vivoEstVisto=false;
+/* ---- Ahorro de batería ----
+   El iPhone en "modo de bajo consumo" (y algunos navegadores) no deja arrancar videos que no salen de un toque:
+   las escenas vivas y el video de la portada quedan quietos (se ve su imagen, que es idéntica al primer cuadro).
+   Las transiciones sí funcionan porque cada una se activa con el toque que la lanza (desbloquear).
+   Al detectarlo se deja de insistir (antes se reintentaba ~17 veces por segundo) y se aligeran efectos.
+   También entra con la batería baja (≤ 20 % y sin cargar) donde el navegador lo informa (Chrome en Android). */
+let ahorro=false;
+function modoAhorro(motivo){
+  if(ahorro) return; ahorro=true; document.body.classList.add('ahorro'); document.body.dataset.ahorro=motivo||'';
+  document.querySelectorAll('.vivo-inicio,.vivo-est,#splash video.intro').forEach(v=>{ try{ v.pause(); }catch(e){} v.classList.remove('on'); });
+  bld.querySelectorAll('.st').forEach(g=>g.classList.remove('vivo-on'));
+  const im=document.querySelector('#splash img'); if(im) im.style.visibility='';
+}
+const rechazoAutoplay=e=>{ if(e && e.name==='NotAllowedError') modoAhorro('autoplay'); };
+if(navigator.getBattery) navigator.getBattery().then(b=>{ const ver=()=>{ if(!b.charging && b.level<=.2) modoAhorro('bateria'); };
+  ver(); b.addEventListener('levelchange',ver); b.addEventListener('chargingchange',ver); }).catch(()=>{});
 function controlVivos(){
   if(RM.matches) return;
   /* sigue corriendo hasta que un video de transición la tapa; ahí se detiene y vuelve al cuadro 0 (= render),
      así al terminar la transición empalma exacto y arranca de nuevo desde ahí */
   const tapada=!!stage.querySelector('.fxv.on');
   const verEst=!!vivoEst.dataset.src && current==='edificio' && !document.hidden && !tapada;
-  if(verEst && !vivoEstVisto){ const p=vivoEst.play(); if(p&&p.catch) p.catch(()=>{}); }
+  if(verEst && !vivoEstVisto && !ahorro){ const p=vivoEst.play(); if(p&&p.catch) p.catch(rechazoAutoplay); }
   else if(!verEst && vivoEstVisto){ vivoEst.pause(); try{ vivoEst.currentTime=0; }catch(e){} }
   vivoEstVisto=verEst;
+  /* el video de la portada no sigue corriendo escondido una vez que se entró (gasta batería en el celular) */
+  const vp=document.querySelector('#splash video.intro');
+  if(vp && !vp.paused && document.getElementById('splash').classList.contains('gone')) vp.pause();
   const vi=document.querySelector('.vivo-inicio');
   if(vi){ const verIni=current==='inicio' && !document.hidden;
-    if(verIni && vi.paused){ if(!vi.dataset.visto) { try{ vi.currentTime=0; }catch(e){} } vi.dataset.visto='1'; const p=vi.play(); if(p&&p.catch) p.catch(()=>{}); }
+    if(verIni && vi.paused && !ahorro){ if(!vi.dataset.visto) { try{ vi.currentTime=0; }catch(e){} } vi.dataset.visto='1'; const p=vi.play(); if(p&&p.catch) p.catch(rechazoAutoplay); }
     else if(!verIni && !vi.paused){ vi.pause(); delete vi.dataset.visto; } }
 }
 setInterval(controlVivos,60);
@@ -3592,7 +3617,8 @@ preload(VIDEOS.vuelo);
 if(VIDEOS.intro && !RM.matches){ const im=splash.querySelector('img'); const v=document.createElement('video');
   Object.assign(v,{src:VIDEOS.intro,muted:true,loop:true,autoplay:true,playsInline:true,poster:im.getAttribute('src')}); v.setAttribute('playsinline','');
   v.className='intro'; v.setAttribute('aria-hidden','true');
-  v.addEventListener('playing',()=>{ v.classList.add('on'); setTimeout(()=>{ im.style.visibility='hidden'; },900); },{once:true}); im.after(v); }
+  v.addEventListener('playing',()=>{ if(ahorro){ v.pause(); return; } v.classList.add('on'); setTimeout(()=>{ if(!ahorro) im.style.visibility='hidden'; },900); },{once:true}); im.after(v);
+  try{ const p=v.play(); if(p&&p.catch) p.catch(rechazoAutoplay); }catch(e){} }
 pintarSiguiente();
 const startHash=(location.hash||'').slice(1);
 /* Al abrir el enlace siempre se ve la portada con el video de entrada, aunque la dirección traiga una sección guardada.
@@ -4131,7 +4157,7 @@ window.abrirMaqueta=()=>{
   if(location.protocol==='file:') return falloMaqueta('archivo');
   if(sinWebGL()) return falloMaqueta('webgl');
   cargando=import('./maqueta/maqueta.js').then(m=>m.iniciarMaqueta($('mq'),{
-    base:'maqueta/', glbJson:'maqueta_glb.json', plano:'img/r_piso_tipico_3d.jpg', hora:10,
+    base:'maqueta/', glbJson:'maqueta_glb.json', plano:'img/r_piso_tipico_3d.jpg', hora:10, calidad:document.body.classList.contains('ahorro')?'baja':undefined,
     unidad:(n,u)=>{ const d=datoU(n,u); if(!d) return null; return {codigo:d.x.id,tipo:d.t.nombre,estado:ESTADO[d.x.estado],color:COLOR[d.x.estado]}; },
     alElegir:(n,u)=>mq&&mq.verUnidad(n,u),
     alCambiar,
